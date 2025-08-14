@@ -49,7 +49,7 @@ python real_debrid_tui_python_cli.py
 - k – przełącz widok kolejki
 
 ## Kategorie (taby)
-- Other – gry i wszystko, co nie pasuje do filmów/seriali (domyślnie pierwsza)
+- Games – gry i wszystko, co nie pasuje do filmów/seriali (domyślnie pierwsza)
 - Movies – pliki wideo bez wzorca serialowego
 - Series – wykrywane heurystyką (np. S01E01, "season", "episode")
 - All – wszystkie

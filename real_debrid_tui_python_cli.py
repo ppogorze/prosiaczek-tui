@@ -528,8 +528,14 @@ class SettingsModal(Static):
         yield Label("⚙️ Ustawienia")
         self.api = Input(value=self.cfg.get("api_key", ""), placeholder="Real-Debrid API token", password=True)
         self.down = Input(value=self.cfg.get("downloader", "aria2c"), placeholder="Downloader: aria2c/curl/wget")
-        self.dir = Input(value=self.cfg.get("download_dir", ""), placeholder="Katalog pobrań")
+        self.dir = Input(value=self.cfg.get("download_dir", ""), placeholder="Katalog pobrań (dla RPC: na zdalnej maszynie)")
         self.mpv = Input(value=self.cfg.get("mpv_path", "mpv"), placeholder="Ścieżka do mpv")
+        # aria2 RPC
+        self.a2_enabled = Input(value=str(self.cfg.get("aria2_rpc_enabled", True)).lower(), placeholder="aria2 RPC włączone: true/false")
+        self.a2_url = Input(value=self.cfg.get("aria2_rpc_url", "http://127.0.0.1:6800/jsonrpc"), placeholder="aria2 RPC URL: http://host:6800/jsonrpc")
+        self.a2_secret = Input(value=self.cfg.get("aria2_rpc_secret", ""), placeholder="aria2 RPC secret (opcjonalnie)")
+        self.a2_autostart = Input(value=str(self.cfg.get("aria2_autostart", True)).lower(), placeholder="Autostart lokalnego aria2c: true/false")
+        # layout
         yield Label("API key:")
         yield self.api
         yield Label("Downloader:")
@@ -538,16 +544,30 @@ class SettingsModal(Static):
         yield self.dir
         yield Label("mpv:")
         yield self.mpv
+        yield Label("aria2 RPC włączone:")
+        yield self.a2_enabled
+        yield Label("aria2 RPC URL:")
+        yield self.a2_url
+        yield Label("aria2 RPC secret:")
+        yield self.a2_secret
+        yield Label("Autostart lokalnego aria2c:")
+        yield self.a2_autostart
         yield Horizontal(Button("Zapisz", id="save"), Button("Anuluj", id="cancel"))
 
     def on_button_pressed(self, ev: Button.Pressed):
         if ev.button.id == "save":
+            def _pbool(s: str) -> bool:
+                return s.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
             self.cfg.update(
                 {
                     "api_key": self.api.value.strip(),
                     "downloader": self.down.value.strip() or "aria2c",
                     "download_dir": self.dir.value.strip(),
                     "mpv_path": self.mpv.value.strip() or "mpv",
+                    "aria2_rpc_enabled": _pbool(self.a2_enabled.value),
+                    "aria2_rpc_url": self.a2_url.value.strip() or "http://127.0.0.1:6800/jsonrpc",
+                    "aria2_rpc_secret": self.a2_secret.value.strip(),
+                    "aria2_autostart": _pbool(self.a2_autostart.value),
                 }
             )
             self.post_message(self.Saved(self.cfg))
@@ -585,7 +605,7 @@ class RDTUI(App):
     # Multi-select i filtr
     selected_ids: set[str] = set()
     filter_text: reactive[str] = reactive("")
-    active_category: reactive[str] = reactive("All")  # Tabs: Other, Movies, Series, All
+    active_category: reactive[str] = reactive("All")  # Tabs: Games, Movies, Series, All
     _all_rows: List[TorrentRow] = []
 
     # UI state flags
@@ -599,7 +619,7 @@ class RDTUI(App):
         yield Header(show_clock=True)
         with Container():
             # Taby kategorii
-            self.tabs = Tabs("Other", "Movies", "Series", "All", id="tabs")
+            self.tabs = Tabs("Games", "Movies", "Series", "All", id="tabs")
             yield self.tabs
 
             # Pasek filtra (ukryty dopóki nie aktywny)
@@ -780,7 +800,7 @@ class RDTUI(App):
         # Filmy – plik wideo i brak wzorca serialowego
         if is_video(name):
             return "Movies"
-        return "Other"
+        return "Games"
 
     def on_tabs_tab_activated(self, event):  # type: ignore[override]
         try:
