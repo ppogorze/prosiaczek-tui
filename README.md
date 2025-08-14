@@ -5,6 +5,8 @@ Tekstowy interfejs do Real-Debrid zbudowany na Textual.
 ## Funkcje
 - Lista torrentów z filtrami i kategoriami (Other, Movies, Series, All)
 - Dodawanie magnetów i automatyczny wybór plików
+- Dodawanie linków do plików .torrent
+- Dodawanie hosterów (unrestrict)
 - Usuwanie, pobieranie, odtwarzanie (mpv) i kopiowanie linków
 - Integracja z aria2c:
   - RPC (autostart opcjonalnie)
@@ -36,7 +38,7 @@ python real_debrid_tui_python_cli.py
 ## Skróty klawiszowe (wybrane)
 - Strzałki – nawigacja
 - spacja – zaznacz/odznacz
-- a – dodaj magnet
+- a – dodaj plik
 - r – odśwież
 - x – usuń
 - d – pobierz

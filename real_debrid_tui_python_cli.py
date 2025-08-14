@@ -71,7 +71,7 @@ from textual.widgets import (
 class TorrentsTable(DataTable):
     BINDINGS = [
         Binding("space", "toggle_select", "Zaznacz", priority=True),
-        Binding("a", "add_magnet", "Dodaj magnet", priority=True),
+        Binding("a", "add_magnet", "Dodaj plik", priority=True),
         Binding("r", "refresh", "Odśwież", priority=True),
         Binding("x", "delete", "Usuń", priority=True),
         Binding("d", "download", "Pobierz", priority=True),
@@ -260,6 +260,22 @@ class RDClient:
 
     async def unrestrict_link(self, link: str) -> Dict[str, Any]:
         return await self._post("/unrestrict/link", data={"link": link})
+
+    async def add_torrent_bytes(self, data: bytes, filename: str = "upload.torrent") -> Dict[str, Any]:
+        files = {"file": (filename, data, "application/x-bittorrent")}
+        r = await self._client.post("/torrents/addTorrent", files=files)
+        r.raise_for_status()
+        try:
+            return r.json()
+        except Exception:
+            return {}
+
+    async def add_torrent_from_url(self, url: str) -> Dict[str, Any]:
+        # Download .torrent and upload to RD
+        resp = await self._client.get(url)
+        resp.raise_for_status()
+        fname = url.split("/")[-1] or "upload.torrent"
+        return await self.add_torrent_bytes(resp.content, fname)
 
 
 # -------------------------- aria2 RPC Client --------------------------
@@ -458,7 +474,7 @@ class HelpModal(Static):
         txt = "\n".join([
             "[b]Strzałki[/b] – nawigacja po liście",
             "[b]spacja[/b] – zaznacz/odznacz wiersz (multi-select)",
-            "[b]a[/b] – dodaj magnet (🧲)",
+            "[b]a[/b] – dodaj plik (🧲)",
             "[b]f[/b] – filtr w locie (🔎)",
             "[b]l[/b] – kopiuj link(i) do schowka (🔗)",
             "[b]r[/b] – odśwież (🔄)",
@@ -590,7 +606,7 @@ class RDTUI(App):
         Binding("o", "key_o", "Otwórz lokalizację", priority=True),
         Binding("x", "key_x", "Usuń / Anuluj", priority=True),
         Binding("p", "key_p", "Odtwórz/Pauza", priority=True),
-        Binding("a", "add_magnet", "Dodaj magnet", priority=True),
+        Binding("a", "add_magnet", "Dodaj plik", priority=True),
         Binding("r", "refresh", "Odśwież", priority=True),
         Binding("d", "download", "Pobierz", priority=True),
         Binding("l", "copy_link", "Kopiuj link", priority=True),
@@ -735,7 +751,7 @@ class RDTUI(App):
         if not self.rd:
             self.notify("Brak API key.", severity="warning")
             return
-        modal = InputModal("Wklej magnet URI (🧲):", "magnet:?xt=...")
+        modal = InputModal("Wklej: magnet / URL do .torrent / link hostera (RD)", "magnet:?xt=... lub https://.../plik.torrent lub https://hoster/...")
         self.mount(modal)
 
     async def action_refresh(self):
@@ -1381,24 +1397,91 @@ class RDTUI(App):
         await self.setup_client()
 
     async def on_input_modal_submitted(self, msg: InputModal.Submitted):
-        """Obsługa potwierdzenia z InputModal – używane do dodawania magnetów."""
+        """Obsługa potwierdzenia z InputModal – dodanie magnet/.torrent/hoster."""
         if not self.rd:
             self.notify("Brak API key.", severity="warning")
             return
-        magnet = (msg.value or "").strip()
-        if not magnet.startswith("magnet:"):
-            self.notify("To nie wygląda na magnet URI.", severity="warning")
-            return
+        raw = (msg.value or "").strip()
         try:
-            self.notify("Dodawanie magnetu…")
-            r = await self.rd.add_magnet(magnet)
-            tid = r.get("id") or r.get("torrent") or r.get("hash") or ""
-            if not tid:
-                self.notify("Nie udało się utworzyć torrenta", severity="error")
+            # 1) Magnet
+            if raw.startswith("magnet:"):
+                self.notify("Dodawanie magnetu…")
+                r = await self.rd.add_magnet(raw)
+                tid = r.get("id") or r.get("torrent") or r.get("hash") or ""
+                if not tid:
+                    self.notify("Nie udało się utworzyć torrenta", severity="error")
+                    return
+                await self.rd.select_all(tid)
+                self.notify("Wybrano wszystkie pliki. Przetwarzanie w toku… 🔄")
+                await self.action_refresh()
                 return
-            await self.rd.select_all(tid)
-            self.notify("Wybrano wszystkie pliki. Przetwarzanie w toku… 🔄")
-            await self.action_refresh()
+
+            # 2) HTTP(S) URL: .torrent or hoster
+            if raw.startswith("http://") or raw.startswith("https://"):
+                # Heurystyka: URL do .torrent -> upload do RD
+                if re.search(r"\.torrent(\?|$)", raw, re.IGNORECASE):
+                    self.notify("Dodawanie torrenta z URL…")
+                    r = await self.rd.add_torrent_from_url(raw)
+                    tid = r.get("id") or r.get("torrent") or r.get("hash") or ""
+                    if not tid:
+                        self.notify("Nie udało się utworzyć torrenta (.torrent)", severity="error")
+                        return
+                    await self.rd.select_all(tid)
+                    self.notify("Wybrano wszystkie pliki. Przetwarzanie w toku… 🔄")
+                    await self.action_refresh()
+                    return
+                # Inaczej: hoster URL -> unrestrict i pobieraj
+                self.notify("Przetwarzanie linku hostera przez RD…")
+                unr = await self.rd.unrestrict_link(raw)
+                direct = unr.get("download") or unr.get("link")
+                if not direct:
+                    err = unr.get("error") or "Brak direct link z RD"
+                    self.notify(f"Nie udało się unrestrict: {err}", severity="error")
+                    return
+                fname = unr.get("filename") or direct.split("/")[-1]
+                dl_dir = Path(self.cfg.get("download_dir", str(Path.home() / "Downloads" / APP_NAME)))
+                use_rpc = self.cfg.get("aria2_rpc_enabled", False) and self.aria2 is not None
+                if use_rpc:
+                    try:
+                        gid = await self.aria2.add_uri([direct], out=fname, dir=str(dl_dir))  # type: ignore[arg-type]
+                        self.download_tasks[gid] = {
+                            "tid": None,
+                            "filename": fname,
+                            "dir": str(dl_dir),
+                            "status": "queued",
+                            "progress": "0%",
+                            "speed": "0 B/s",
+                            "eta": "?",
+                        }
+                        # Upewnij się, że kolejka widoczna i timer działa
+                        if not self.queue_table.display:
+                            self.queue_table.display = True
+                            self.set_interval(2.0, self.refresh_queue, pause=False)
+                        self.notify("Dodano do kolejki aria2 ⬇️")
+                    except Exception as e:
+                        self.notify(f"aria2 addUri error: {e}", severity="error")
+                        # Fallback do lokalnego pobierania
+                        asyncio.create_task(run_downloader(self.cfg.get("downloader", "aria2c"), direct, dl_dir, filename=fname))
+                        self.notify("Pobieranie uruchomione w tle ✅")
+                else:
+                    asyncio.create_task(run_downloader(self.cfg.get("downloader", "aria2c"), direct, dl_dir, filename=fname))
+                    self.notify("Pobieranie uruchomione w tle ✅")
+                return
+
+            # 3) Nieznany format
+            self.notify("Wklej magnet / URL do .torrent / link hostera.", severity="warning")
+        except httpx.HTTPStatusError as e:
+            # Spróbuj pokazać komunikat RD
+            try:
+                data = e.response.json()
+                msg = data.get("error")
+                code = data.get("error_code")
+                if msg:
+                    self.notify(f"Błąd RD: {msg} (code {code})", severity="error")
+                    return
+            except Exception:
+                pass
+            self.notify(f"HTTP {e.response.status_code}: {e}", severity="error")
         except Exception as e:
             self.notify(f"Błąd dodawania: {e}", severity="error")
 
