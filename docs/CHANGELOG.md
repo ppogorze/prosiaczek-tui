@@ -163,31 +163,59 @@
 
 ---
 
-### 🐛 Bugfix #5: Kursor wraca na górę przy odświeżaniu
+### 🐛 Bugfix #5: Kursor wraca na górę przy odświeżaniu (LISTA + KOLEJKA!)
 **Data:** 2025-10-02
 
 **Problem:**
 - Przy odświeżaniu tabeli (co 0.5s lub ręcznie) kursor zawsze wracał na górę listy
+- **Problem występował w 2 miejscach:**
+  - Lista torrentów (główna tabela)
+  - Kolejka pobierania (queue table) - odświeżana co 2s
 - Użytkownik tracił pozycję na której był
-- Szczególnie irytujące przy przeglądaniu długiej listy torrentów
+- Szczególnie irytujące przy przeglądaniu długiej listy lub monitorowaniu pobierania
 
 **Rozwiązanie:**
-- Zapisywanie pozycji kursora przed `_render_table()`:
-  - Zapisujemy `cursor_coordinate` (row, column)
-  - Zapisujemy `current_row_key` (ID torrenta) aby znaleźć wiersz po kluczu
-- Przywracanie pozycji po odświeżeniu:
-  - **Preferowane:** Znajdź wiersz po `row_key` i ustaw kursor tam (działa nawet jeśli kolejność się zmieniła)
-  - **Fallback:** Ustaw kursor na tym samym indeksie (jeśli wiersz został usunięty, użyj najbliższego)
-  - **Default:** Jeśli nic nie działa, ustaw na górę (0, 0)
+1. **Naprawiono `_render_table()`** - lista torrentów (linie 373-438):
+   - Zapisywanie pozycji kursora przed `clear()`:
+     - `cursor_coordinate` (row, column)
+     - `current_row_key` (ID torrenta) aby znaleźć wiersz po kluczu
+   - Przywracanie pozycji po odświeżeniu:
+     - ✅ **Preferowane:** Znajdź wiersz po `row_key` i ustaw kursor tam (działa nawet jeśli kolejność się zmieniła)
+     - ⚠️ **Fallback:** Ustaw kursor na tym samym indeksie (jeśli wiersz został usunięty, użyj najbliższego)
+     - 🔄 **Default:** Jeśli nic nie działa, ustaw na górę (0, 0)
+
+2. **Naprawiono `refresh_queue()`** - kolejka pobierania (linie 724-834):
+   - Zapisywanie pozycji kursora przed `clear()`:
+     - `cursor_coordinate` (row, column)
+     - `current_gid` (GID zadania aria2) aby znaleźć wiersz po kluczu
+   - Przywracanie pozycji po odświeżeniu (ta sama strategia jak w `_render_table()`)
+
+3. **Naprawiono `_current_gid()`** - pobieranie GID z kolejki (linie 541-583):
+   - Użyto Textual 6.2+ API: `cursor_coordinate` + `coordinate_to_cell_key()`
+   - `coordinate_to_cell_key()` zwraca `CellKey(row_key, column_key)` - NamedTuple
+   - `row_key` to obiekt `RowKey` (dziedziczy po `StringKey`)
+   - Dostęp do wartości przez `row_key.value` (atrybut `StringKey`)
+   - Fallback dla Textual 5.x
 
 **Pliki:**
 - `rdtui/app.py` linie 373-438 (`_render_table` z zachowaniem pozycji kursora)
+- `rdtui/app.py` linie 724-834 (`refresh_queue` z zachowaniem pozycji kursora)
+- `rdtui/app.py` linie 541-583 (`_current_gid` z Textual 6.2+ API i `row_key.value`)
 
 **Test:**
-1. Przewiń listę torrentów w dół
-2. Zaznacz jakiś torrent w środku listy
-3. Poczekaj na auto-refresh (lub naciśnij `r`)
-4. Kursor powinien pozostać na tym samym torrencie! ✅
+1. **Lista torrentów:**
+   - Przewiń listę torrentów w dół
+   - Zaznacz jakiś torrent w środku listy
+   - Poczekaj na auto-refresh (lub naciśnij `r`)
+   - Kursor powinien pozostać na tym samym torrencie! ✅
+
+2. **Kolejka pobierania:**
+   - Dodaj pliki do kolejki (naciśnij `d` na torrencie)
+   - Otwórz kolejkę (naciśnij `q`)
+   - Zaznacz jakieś pobieranie w środku listy
+   - Poczekaj 2s (auto-refresh kolejki)
+   - Kursor powinien pozostać na tym samym pobieraniu! ✅
+   - Procenty rosną, ale kursor nie skacze na górę! 🎉
 
 ---
 

@@ -539,55 +539,47 @@ class RDTUI(App):
         return None
 
     def _current_gid(self) -> Optional[str]:
-        """Get the current queue GID from the queue table cursor."""
+        """Get the current queue GID from the queue table cursor.
+
+        Uses Textual 6.2+ API: coordinate_to_cell_key(cursor_coordinate)
+        """
+        # If there are no rows, bail out
         try:
             if getattr(self.queue_table, "row_count", 0) == 0:
                 return None
         except Exception:
             pass
-        # direct cursor row key
+
+        # Textual 6.2+ API: Use cursor_coordinate and coordinate_to_cell_key
         try:
-            row_key = getattr(self.queue_table, "cursor_row_key")
+            cursor_coord = self.queue_table.cursor_coordinate
+            if cursor_coord is not None:
+                # coordinate_to_cell_key returns CellKey(row_key, column_key)
+                cell_key = self.queue_table.coordinate_to_cell_key(cursor_coord)
+                if cell_key is not None:
+                    # CellKey is a NamedTuple with row_key and column_key
+                    row_key = cell_key.row_key
+                    # RowKey has a 'value' attribute (it's a StringKey)
+                    if hasattr(row_key, 'value'):
+                        return str(row_key.value) if row_key.value else str(row_key)
+                    else:
+                        return str(row_key)
+        except Exception as e:
+            # Log error for debugging
+            pass
+
+        # Fallback for older Textual versions (5.x)
+        # Try to get a direct cursor row key
+        try:
+            row_key = getattr(self.queue_table, "cursor_row_key", None)
             if row_key is not None:
-                return str(row_key)
+                if hasattr(row_key, 'value'):
+                    return str(row_key.value) if row_key.value else str(row_key)
+                else:
+                    return str(row_key)
         except Exception:
             pass
-        # cursor row index
-        try:
-            row_index = getattr(self.queue_table, "cursor_row")
-        except Exception:
-            row_index = 0
-        if row_index is None:
-            row_index = 0
-        # Try get_row_at(index).key (newer) but guard when it returns a list
-        try:
-            row = self.queue_table.get_row_at(row_index)
-            key = getattr(row, "key", None)
-            if key is not None:
-                return str(key)
-        except Exception:
-            pass
-        # Try get_row(index).key
-        try:
-            row = self.queue_table.get_row(row_index)
-            key = getattr(row, "key", None)
-            if key is not None:
-                return str(key)
-        except Exception:
-            pass
-        # Access row_keys
-        try:
-            keys = getattr(self.queue_table, "row_keys", None)
-            if keys is not None:
-                return str(keys[row_index])
-        except Exception:
-            pass
-        # Fallback: first key from tasks if any
-        try:
-            if self.download_tasks:
-                return str(sorted(self.download_tasks.keys())[0])
-        except Exception:
-            pass
+
         return None
 
     async def action_toggle_select(self):
@@ -722,13 +714,28 @@ class RDTUI(App):
         return out
 
     async def refresh_queue(self):
-        """Refresh the download queue from aria2."""
+        """Refresh the download queue from aria2 while preserving cursor position."""
         if (
             not self.queue_table.display
             or not self.cfg.get("aria2_rpc_enabled", False)
             or not self.aria2
         ):
             return
+
+        # Save current cursor position in queue table
+        old_cursor_row = None
+        old_cursor_col = None
+        current_gid = None
+
+        try:
+            if self.queue_table.row_count > 0:
+                old_cursor_row = self.queue_table.cursor_coordinate.row
+                old_cursor_col = self.queue_table.cursor_coordinate.column
+                # Try to get the current GID to restore position by key
+                current_gid = self._current_gid()
+        except Exception:
+            pass
+
         # Build a fresh view of tasks by asking aria2
         try:
             active = await self.aria2.tell_active()
@@ -778,7 +785,10 @@ class RDTUI(App):
 
         # Render table (stable order for nicer UI)
         self.queue_table.clear()
-        for gid in sorted(self.download_tasks.keys()):
+        sorted_gids = sorted(self.download_tasks.keys())
+        new_row_index = None  # Track where the current GID ended up
+
+        for idx, gid in enumerate(sorted_gids):
             info = self.download_tasks[gid]
             pct = info.get("progress_pct", 0)
             progress_bar = self._make_queue_progress_bar(pct)
@@ -793,10 +803,25 @@ class RDTUI(App):
                 info.get("dir", ""),
                 key=gid,
             )
-        # Ensure a visible row selection for key actions
+
+            # Track if this is the row we were on
+            if current_gid and gid == current_gid:
+                new_row_index = idx
+
+        # Restore cursor position
         try:
             if getattr(self.queue_table, "row_count", 0) > 0:
-                self.queue_table.cursor_coordinate = (0, 0)
+                if new_row_index is not None and old_cursor_col is not None:
+                    # Restore to the same row (by GID) and column
+                    self.queue_table.move_cursor(row=new_row_index, column=old_cursor_col)
+                elif old_cursor_row is not None and old_cursor_col is not None:
+                    # Fallback: restore to same row index (if still valid)
+                    max_row = len(sorted_gids) - 1
+                    safe_row = min(old_cursor_row, max_row)
+                    self.queue_table.move_cursor(row=safe_row, column=old_cursor_col)
+                else:
+                    # Default: move to top
+                    self.queue_table.cursor_coordinate = (0, 0)
         except Exception:
             pass
 
