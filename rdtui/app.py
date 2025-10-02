@@ -12,14 +12,14 @@ import httpx
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal
+from textual.containers import Container, Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Input, Log, Tabs
 
 from rdtui.api import Aria2RPC, RDClient
 from rdtui.config import DEFAULT_CONFIG, load_config, save_config
 from rdtui.models import TorrentRow
-from rdtui.ui import HelpModal, InputModal, QueueTable, SettingsModal, TorrentsTable
+from rdtui.ui import HelpModal, InputModal, QueueTable, QuickPasteModal, SettingsModal, TorrentsTable
 from rdtui.utils import (
     format_eta,
     format_progress,
@@ -40,7 +40,17 @@ except Exception:
 class RDTUI(App):
     """Main Real-Debrid TUI application."""
 
-    CSS_PATH = None
+    CSS = """
+    #tbl {
+        height: 1fr;
+    }
+
+    #queue {
+        height: 40%;
+        min-height: 10;
+    }
+    """
+
     BINDINGS = [
         # Global + routing keys
         Binding("g", "settings", "Ustawienia", priority=True),
@@ -57,6 +67,7 @@ class RDTUI(App):
         Binding("l", "copy_link", "Kopiuj link", priority=True),
         Binding("f", "toggle_filter", "Filtr", priority=True),
         Binding("space", "toggle_select", "Zaznacz", priority=True),
+        Binding("ctrl+v", "quick_paste", "Wklej", priority=True),
     ]
 
     rd: Optional[RDClient] = None
@@ -91,13 +102,15 @@ class RDTUI(App):
             self.filter_bar.display = False
             yield self.filter_bar
 
-            self.table = TorrentsTable(id="tbl")
-            yield self.table
+            # Vertical split for table and queue
+            with Vertical():
+                self.table = TorrentsTable(id="tbl")
+                yield self.table
 
-            # Download queue table (hidden by default)
-            self.queue_table = QueueTable(id="queue")
-            self.queue_table.display = self.cfg.get("download_queue_visible", False)
-            yield self.queue_table
+                # Download queue table (hidden by default)
+                self.queue_table = QueueTable(id="queue")
+                self.queue_table.display = False
+                yield self.queue_table
 
             self.log_widget = Log(id="log")
             self.log_widget.display = False
@@ -206,6 +219,26 @@ class RDTUI(App):
         modal = SettingsModal(self.cfg)
         self.mount(modal)
 
+    async def action_quick_paste(self):
+        """Quick paste - detect clipboard content and show appropriate modal."""
+        if not self.rd:
+            self.notify("Brak API key.", severity="warning")
+            return
+
+        try:
+            import pyperclip
+            clipboard_content = pyperclip.paste()
+
+            if clipboard_content and clipboard_content.strip():
+                modal = QuickPasteModal(clipboard_content)
+                self.mount(modal)
+            else:
+                self.notify("Schowek jest pusty", severity="warning")
+        except ImportError:
+            self.notify("pyperclip nie jest zainstalowany", severity="error")
+        except Exception as e:
+            self.notify(f"Błąd odczytu schowka: {e}", severity="error")
+
     async def action_add_magnet(self):
         """Show input modal for adding magnet/torrent/hoster link."""
         if not self.rd:
@@ -242,13 +275,14 @@ class RDTUI(App):
         rows = self._filtered_rows()
         # sort: newest first
         rows.sort(key=lambda r: r.added or datetime.fromtimestamp(0), reverse=True)
+
         for row in rows:
             self.table.add_row(
                 self._row_selected_icon(row.id),
                 row.id,
-                row.filename,
+                row.pretty_filename(max_width=60, selected=False),  # Bez przewijania
                 row.pretty_size(),
-                row.pretty_progress(),
+                row.pretty_progress_bar(),
                 row.pretty_added(),
                 row.pretty_status(),
                 key=row.id,
@@ -266,16 +300,19 @@ class RDTUI(App):
         cat = (self.active_category or "All").lower()
         if cat != "all":
             rows = [r for r in rows if self._row_category(r).lower() == cat]
-        # Text filter
+        # Text filter with fuzzy search
         if not self.filter_text:
             return rows
-        q = self.filter_text.lower().strip()
-        out: List[TorrentRow] = []
-        for r in rows:
-            hay = f"{r.filename} {r.status}".lower()
-            if q in hay:
-                out.append(r)
-        return out
+
+        # Import fuzzy search
+        from rdtui.utils.search import fuzzy_search
+
+        q = self.filter_text.strip()
+        # Use fuzzy search with threshold of 40
+        results = fuzzy_search(q, rows, threshold=40)
+
+        # Extract just the rows (discard scores)
+        return [row for score, row in results]
 
     def _row_category(self, r: TorrentRow) -> str:
         """Determine the category of a torrent row."""
@@ -801,12 +838,22 @@ class RDTUI(App):
         save_config(self.cfg)
         await self.setup_client()
 
+    async def on_quick_paste_modal_confirmed(self, msg: QuickPasteModal.Confirmed):
+        """Handle quick paste modal confirmation."""
+        # Reuse the same logic as InputModal
+        await self._process_link(msg.link)
+
     async def on_input_modal_submitted(self, msg: InputModal.Submitted):
         """Handle input modal submission for adding magnet/torrent/hoster."""
+        raw = (msg.value or "").strip()
+        await self._process_link(raw)
+
+    async def _process_link(self, raw: str):
+        """Process a magnet/torrent/hoster link."""
         if not self.rd:
             self.notify("Brak API key.", severity="warning")
             return
-        raw = (msg.value or "").strip()
+        raw = raw.strip()
         try:
             # 1) Magnet
             if raw.startswith("magnet:"):

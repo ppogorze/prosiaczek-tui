@@ -1,9 +1,10 @@
 """Modal dialog components."""
 
 from typing import Any, Dict
+import re
 
 from textual.app import ComposeResult
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Button, Input, Label, Static
 
@@ -29,7 +30,8 @@ class HelpModal(Static):
                 "[b]Strzałki[/b] – nawigacja po liście",
                 "[b]spacja[/b] – zaznacz/odznacz wiersz (multi-select)",
                 "[b]a[/b] – dodaj plik (🧲)",
-                "[b]f[/b] – filtr w locie (🔎)",
+                "[b]Ctrl+V[/b] – szybkie wklejenie ze schowka (✨ NOWE!)",
+                "[b]f[/b] – filtr w locie (🔎 fuzzy search)",
                 "[b]l[/b] – kopiuj link(i) do schowka (🔗)",
                 "[b]r[/b] – odśwież (🔄)",
                 "[b]x[/b] – usuń zaznaczone lub bieżący (❌)",
@@ -217,4 +219,108 @@ class SettingsModal(Static):
             self.remove()
         else:
             self.remove()
+
+
+class QuickPasteModal(Static):
+    """Modal for quick paste detection with link preview."""
+
+    DEFAULT_CSS = """
+    QuickPasteModal {
+        background: $panel;
+        border: thick $success;
+        padding: 1 2;
+        width: 70%;
+        height: auto;
+    }
+
+    QuickPasteModal Label {
+        margin: 1 0;
+    }
+
+    QuickPasteModal .link-preview {
+        background: $surface;
+        color: $text;
+        padding: 1;
+        margin: 1 0;
+        border: solid $primary;
+    }
+    """
+
+    class Confirmed(Message):
+        """Message sent when user confirms the paste."""
+
+        def __init__(self, link: str, link_type: str):
+            self.link = link
+            self.link_type = link_type
+            super().__init__()
+
+    def __init__(self, clipboard_content: str):
+        super().__init__()
+        self.clipboard_content = clipboard_content
+        self.link_type = self._detect_link_type(clipboard_content)
+
+    def _detect_link_type(self, content: str) -> str:
+        """Detect what type of link this is."""
+        content = content.strip()
+
+        if content.startswith("magnet:"):
+            return "magnet"
+        elif re.match(r"https?://.*\.(torrent)(\?|$)", content, re.IGNORECASE):
+            return "torrent_url"
+        elif re.match(r"https?://", content):
+            # Może być hoster (1fichier, rapidgator, etc.) lub direct link
+            return "hoster_or_direct"
+        else:
+            return "unknown"
+
+    def compose(self) -> ComposeResult:
+        """Compose the quick paste modal UI."""
+        icon_map = {
+            "magnet": "🧲",
+            "torrent_url": "📦",
+            "hoster_or_direct": "🔗",
+            "unknown": "❓"
+        }
+
+        type_name_map = {
+            "magnet": "Link Magnet",
+            "torrent_url": "Plik .torrent (URL)",
+            "hoster_or_direct": "Link hostera / Direct link",
+            "unknown": "Nieznany typ"
+        }
+
+        icon = icon_map.get(self.link_type, "❓")
+        type_name = type_name_map.get(self.link_type, "Nieznany")
+
+        yield Label(f"{icon} Wykryto w schowku: {type_name}")
+
+        # Preview linku (skrócony)
+        preview = self.clipboard_content[:100]
+        if len(self.clipboard_content) > 100:
+            preview += "..."
+
+        yield Static(preview, classes="link-preview")
+
+        if self.link_type in ["magnet", "torrent_url", "hoster_or_direct"]:
+            # Różne komunikaty w zależności od typu
+            if self.link_type == "magnet":
+                yield Label("💡 Czy chcesz dodać ten torrent?")
+            elif self.link_type == "torrent_url":
+                yield Label("💡 Czy chcesz dodać ten plik .torrent?")
+            else:  # hoster_or_direct
+                yield Label("💡 Czy chcesz przetworzyć ten link przez Real-Debrid?")
+
+            yield Horizontal(
+                Button("✅ Tak, dodaj", id="confirm", variant="success"),
+                Button("❌ Anuluj", id="cancel", variant="error")
+            )
+        else:
+            yield Label("⚠️ To nie wygląda na prawidłowy link")
+            yield Button("Zamknij", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed):
+        """Handle button press."""
+        if event.button.id == "confirm":
+            self.post_message(self.Confirmed(self.clipboard_content, self.link_type))
+        self.remove()
 

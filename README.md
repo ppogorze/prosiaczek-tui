@@ -2,6 +2,18 @@
 
 Tekstowy interfejs do Real-Debrid zbudowany na Textual.
 
+## ✨ Nowe Funkcje (2024)
+
+- 📊 **Wizualny pasek postępu** - Kolorowy pasek zamiast tylko procentów
+- 🎨 **Kolorowanie statusów** - Każdy status ma unikalny kolor i ikonę
+- 🔍 **Fuzzy search** - Inteligentne wyszukiwanie, działa nawet z literówkami
+- 📝 **Przewijanie nazw** - Długie nazwy przewijają się dla zaznaczonego wiersza
+- ⚡ **Quick Paste (Ctrl+V)** - Auto-wykrywanie linków ze schowka (magnet, .torrent, hostery)
+
+**Zobacz:** `UX_IMPROVEMENTS.md` dla szczegółów | `QUICK_TEST_GUIDE.md` dla testów
+
+---
+
 ## Funkcje
 - Lista torrentów z filtrami i kategoriami (Other, Movies, Series, All)
 - Dodawanie magnetów i automatyczny wybór plików
@@ -27,6 +39,10 @@ pip install -r requirements.txt
 
 ## Uruchomienie
 ```bash
+# Metoda 1: Jako moduł (zalecane)
+python -m rdtui
+
+# Metoda 2: Bezpośrednio
 python real_debrid_tui_python_cli.py
 ```
 
