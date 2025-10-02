@@ -44,20 +44,21 @@ class TorrentRow:
     def pretty_status(self) -> Text:
         """Return a formatted status with icon and color."""
         status_config = {
-            "queued": ("⏳", "yellow"),
-            "downloading": ("🔽", "cyan bold"),
-            "uploading": ("🔼", "blue"),
-            "magnet_error": ("⚠️", "orange"),
-            "error": ("❌", "red bold"),
-            "virus": ("🦠", "magenta bold"),
-            "finished": ("✅", "green bold"),
-            "waiting_files_selection": ("🧲", "yellow"),
-            "compressing": ("📦", "blue"),
-            "dead": ("💀", "red"),
+            "queued": ("⏳", "yellow", "W kolejce"),
+            "downloading": ("🔽", "cyan bold", "Pobieranie"),
+            "uploading": ("🔼", "blue", "Wysyłanie"),
+            "magnet_error": ("⚠️", "orange", "Błąd magnet"),
+            "error": ("❌", "red bold", "Błąd"),
+            "virus": ("🦠", "magenta bold", "Wirus"),
+            "finished": ("✅", "green bold", "Pobrane"),
+            "downloaded": ("✅", "green bold", "Pobrane"),
+            "waiting_files_selection": ("🧲", "yellow", "Wybór plików"),
+            "compressing": ("📦", "blue", "Kompresja"),
+            "dead": ("💀", "red", "Martwy"),
         }
 
-        icon, color = status_config.get(self.status, ("🔷", "white"))
-        return Text(f"{icon} {self.status}", style=color)
+        icon, color, polish = status_config.get(self.status, ("🔷", "white", self.status))
+        return Text(f"{icon} {polish}", style=color)
 
     def pretty_size(self) -> str:
         """Return a human-readable file size."""
@@ -122,5 +123,5 @@ class TorrentRow:
         else:
             # Jeśli nie zaznaczony - po prostu utnij z wielokropkiem
             truncated = name[:max_width - 3] + "..."
-            return Text(truncated, style="dim")
+            return Text(truncated)
 

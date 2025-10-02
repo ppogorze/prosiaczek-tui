@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
+from rich.text import Text
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -52,22 +53,22 @@ class RDTUI(App):
     """
 
     BINDINGS = [
-        # Global + routing keys
+        # Podstawowe akcje
+        Binding("a", "add_magnet", "Dodaj", priority=True),
+        Binding("ctrl+v", "quick_paste", "Wklej", priority=True),
+        Binding("r", "refresh", "Odśwież", priority=True),
+        Binding("f", "toggle_filter", "Szukaj", priority=True),
+        # Operacje na plikach
+        Binding("space", "toggle_select", "Zaznacz", priority=True),
+        Binding("d", "download", "Pobierz", priority=True),
+        Binding("x", "delete", "Usuń", priority=True),
+        Binding("l", "copy_link", "Kopiuj link", priority=True),
+        # Widoki i ustawienia
+        Binding("k", "toggle_queue", "Kolejka", priority=True),
         Binding("g", "settings", "Ustawienia", priority=True),
         Binding("?", "help", "Pomoc", priority=True),
+        # Wyjście na końcu
         Binding("q", "quit", "Wyjście", priority=True),
-        Binding("k", "toggle_queue", "Kolejka pobrań", priority=True),
-        # Route keys to appropriate context
-        Binding("o", "key_o", "Otwórz lokalizację", priority=True),
-        Binding("x", "key_x", "Usuń / Anuluj", priority=True),
-        Binding("p", "key_p", "Odtwórz/Pauza", priority=True),
-        Binding("a", "add_magnet", "Dodaj plik", priority=True),
-        Binding("r", "refresh", "Odśwież", priority=True),
-        Binding("d", "download", "Pobierz", priority=True),
-        Binding("l", "copy_link", "Kopiuj link", priority=True),
-        Binding("f", "toggle_filter", "Filtr", priority=True),
-        Binding("space", "toggle_select", "Zaznacz", priority=True),
-        Binding("ctrl+v", "quick_paste", "Wklej", priority=True),
     ]
 
     rd: Optional[RDClient] = None
@@ -77,7 +78,7 @@ class RDTUI(App):
     # Multi-select and filter
     selected_ids: set[str] = set()
     filter_text: reactive[str] = reactive("")
-    active_category: reactive[str] = reactive("All")  # Tabs: Games, Movies, Series, All
+    active_category: reactive[str] = reactive("Wszystko")  # Tabs: Gry, Filmy, Seriale, Wszystko
     _all_rows: List[TorrentRow] = []
 
     # UI state flags
@@ -92,7 +93,7 @@ class RDTUI(App):
         yield Header(show_clock=True)
         with Container():
             # Category tabs
-            self.tabs = Tabs("Games", "Movies", "Series", "All", id="tabs")
+            self.tabs = Tabs("Gry", "Filmy", "Seriale", "Wszystko", id="tabs")
             yield self.tabs
 
             # Filter bar (hidden until active)
@@ -121,7 +122,7 @@ class RDTUI(App):
         """Initialize the application on mount."""
         self.cfg = load_config()
         self.table.add_columns(
-            "✓", "🆔 ID", "📄 Nazwa", "📦 Rozmiar", "📈 Postęp", "🗓️ Dodano", "🔖 Status"
+            "✓", "📄 Nazwa", "📦 Rozmiar", "📈 Postęp", "🗓️ Dodano", "🔖 Status"
         )
         self.table.cursor_type = "row"
         self.table.zebra_stripes = True
@@ -269,6 +270,41 @@ class RDTUI(App):
         """Get the selection icon for a row."""
         return "✅" if tid in self.selected_ids else " "
 
+    def _make_queue_progress_bar(self, pct: int) -> Text:
+        """Create a visual progress bar for queue items."""
+        bar_width = 20
+        filled = int(bar_width * pct / 100)
+        empty = bar_width - filled
+        bar = "█" * filled + "░" * empty
+
+        # Color based on progress
+        if pct >= 100:
+            color = "green bold"
+        elif pct >= 75:
+            color = "cyan"
+        elif pct >= 50:
+            color = "yellow"
+        elif pct >= 25:
+            color = "orange1"
+        else:
+            color = "red"
+
+        return Text(f"{bar} {pct:3d}%", style=color)
+
+    def _send_notification(self, title: str, message: str):
+        """Send system notification (macOS/Windows/Linux)."""
+        try:
+            from plyer import notification
+            notification.notify(
+                title=title,
+                message=message,
+                app_name="Real-Debrid TUI",
+                timeout=5,
+            )
+        except Exception:
+            # Ignore if plyer not available or notification fails
+            pass
+
     def _render_table(self):
         """Render the torrents table."""
         self.table.clear()
@@ -279,8 +315,7 @@ class RDTUI(App):
         for row in rows:
             self.table.add_row(
                 self._row_selected_icon(row.id),
-                row.id,
-                row.pretty_filename(max_width=60, selected=False),  # Bez przewijania
+                row.pretty_filename(max_width=70, selected=False),  # Więcej miejsca bez ID
                 row.pretty_size(),
                 row.pretty_progress_bar(),
                 row.pretty_added(),
@@ -297,8 +332,8 @@ class RDTUI(App):
         """Get filtered rows based on category and text filter."""
         rows = list(self._all_rows)
         # Category filter
-        cat = (self.active_category or "All").lower()
-        if cat != "all":
+        cat = (self.active_category or "Wszystko").lower()
+        if cat != "wszystko":
             rows = [r for r in rows if self._row_category(r).lower() == cat]
         # Text filter with fuzzy search
         if not self.filter_text:
@@ -317,17 +352,17 @@ class RDTUI(App):
     def _row_category(self, r: TorrentRow) -> str:
         """Determine the category of a torrent row."""
         name = (r.filename or "").lower()
-        # Simple heuristic: "movies" if typical movie pattern, "series" if S01E01/season/episode, else "games"
+        # Simple heuristic: "Filmy" if typical movie pattern, "Seriale" if S01E01/season/episode, else "Gry"
         if (
             re.search(r"\bS\d{1,2}E\d{1,2}\b", name)
             or "season" in name
             or "episode" in name
         ):
-            return "Series"
+            return "Seriale"
         # Movies – video file without series pattern
         if is_video(name):
-            return "Movies"
-        return "Games"
+            return "Filmy"
+        return "Gry"
 
     def on_tabs_tab_activated(self, event):  # type: ignore[override]
         """Handle tab activation."""
@@ -472,11 +507,29 @@ class RDTUI(App):
         tid = self._current_tid()
         if not tid:
             return
+
+        # Save cursor position
+        old_row = None
+        old_col = None
+        try:
+            old_row = self.table.cursor_row
+            old_col = self.table.cursor_column
+        except Exception:
+            pass
+
         if tid in self.selected_ids:
             self.selected_ids.remove(tid)
         else:
             self.selected_ids.add(tid)
+
         self._render_table()
+
+        # Restore cursor position
+        if old_row is not None and old_col is not None:
+            try:
+                self.table.move_cursor(row=old_row, column=old_col)
+            except Exception:
+                pass
 
     async def action_toggle_filter(self):
         """Toggle filter bar visibility."""
@@ -592,6 +645,17 @@ class RDTUI(App):
             comp = int(it.get("completedLength", 0) or 0)
             speed = int(it.get("downloadSpeed", 0) or 0)
             eta = format_eta(total, comp, speed)
+            pct = int((comp / total * 100) if total > 0 else 0)
+
+            # Check if download just completed
+            old_status = self.download_tasks.get(gid, {}).get("status")
+            if old_status and old_status != "complete" and status == "complete":
+                # Send notification
+                self._send_notification(
+                    "Pobieranie zakończone",
+                    f"✅ {filename}"
+                )
+
             self.download_tasks[gid] = {
                 **self.download_tasks.get(gid, {}),
                 "filename": filename,
@@ -599,6 +663,7 @@ class RDTUI(App):
                 "status": status,
                 "size": format_size(total),
                 "progress": format_progress(comp, total),
+                "progress_pct": pct,
                 "speed": format_speed(speed),
                 "eta": eta,
             }
@@ -607,11 +672,14 @@ class RDTUI(App):
         self.queue_table.clear()
         for gid in sorted(self.download_tasks.keys()):
             info = self.download_tasks[gid]
+            pct = info.get("progress_pct", 0)
+            progress_bar = self._make_queue_progress_bar(pct)
+
             self.queue_table.add_row(
                 info.get("filename", gid),
                 info.get("size", "?"),
                 info.get("status", "?"),
-                info.get("progress", "0%"),
+                progress_bar,
                 info.get("speed", "0 B/s"),
                 info.get("eta", "?"),
                 info.get("dir", ""),
@@ -745,7 +813,7 @@ class RDTUI(App):
                                 "eta": "?",
                             }
                         except Exception as e:
-                            self.notify(f"aria2 addUri error: {e}", severity="error")
+                            self.notify(f"Błąd aria2: {e}", severity="error")
                     self.notify(f"Dodano do kolejki {len(links)} plików → aria2 ⬇️")
                     # Ensure queue visible and timer running
                     if not self.queue_table.display:
@@ -923,7 +991,7 @@ class RDTUI(App):
                             self.set_interval(2.0, self.refresh_queue, pause=False)
                         self.notify("Dodano do kolejki aria2 ⬇️")
                     except Exception as e:
-                        self.notify(f"aria2 addUri error: {e}", severity="error")
+                        self.notify(f"Błąd aria2: {e}", severity="error")
                         # Fallback to local download
                         asyncio.create_task(
                             run_downloader(

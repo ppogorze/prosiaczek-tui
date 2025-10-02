@@ -4,3 +4,4 @@ humanize>=4.9.0
 rich>=13.7.0
 python-dateutil>=2.9.0.post0
 pyperclip>=1.8.2
+plyer>=2.1.0
