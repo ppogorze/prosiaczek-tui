@@ -163,6 +163,34 @@
 
 ---
 
+### 🐛 Bugfix #5: Kursor wraca na górę przy odświeżaniu
+**Data:** 2025-10-02
+
+**Problem:**
+- Przy odświeżaniu tabeli (co 0.5s lub ręcznie) kursor zawsze wracał na górę listy
+- Użytkownik tracił pozycję na której był
+- Szczególnie irytujące przy przeglądaniu długiej listy torrentów
+
+**Rozwiązanie:**
+- Zapisywanie pozycji kursora przed `_render_table()`:
+  - Zapisujemy `cursor_coordinate` (row, column)
+  - Zapisujemy `current_row_key` (ID torrenta) aby znaleźć wiersz po kluczu
+- Przywracanie pozycji po odświeżeniu:
+  - **Preferowane:** Znajdź wiersz po `row_key` i ustaw kursor tam (działa nawet jeśli kolejność się zmieniła)
+  - **Fallback:** Ustaw kursor na tym samym indeksie (jeśli wiersz został usunięty, użyj najbliższego)
+  - **Default:** Jeśli nic nie działa, ustaw na górę (0, 0)
+
+**Pliki:**
+- `rdtui/app.py` linie 373-438 (`_render_table` z zachowaniem pozycji kursora)
+
+**Test:**
+1. Przewiń listę torrentów w dół
+2. Zaznacz jakiś torrent w środku listy
+3. Poczekaj na auto-refresh (lub naciśnij `r`)
+4. Kursor powinien pozostać na tym samym torrencie! ✅
+
+---
+
 ### ✅ Organizacja dokumentacji
 - Wszystkie pliki `.md` przeniesione do katalogu `docs/`
 - Lepsza struktura projektu
