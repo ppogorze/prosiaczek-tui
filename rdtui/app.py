@@ -20,7 +20,15 @@ from textual.widgets import Footer, Header, Input, Log, Tabs
 from rdtui.api import Aria2RPC, RDClient
 from rdtui.config import DEFAULT_CONFIG, load_config, save_config
 from rdtui.models import TorrentRow
-from rdtui.ui import HelpModal, InputModal, QueueTable, QuickPasteModal, SettingsModal, TorrentsTable
+from rdtui.ui import (
+    CommandPaletteModal,
+    HelpModal,
+    InputModal,
+    QueueTable,
+    QuickPasteModal,
+    SettingsModal,
+    TorrentsTable,
+)
 from rdtui.utils import (
     format_eta,
     format_progress,
@@ -50,6 +58,12 @@ class RDTUI(App):
         height: 40%;
         min-height: 10;
     }
+
+    #filter-bar {
+        height: auto;
+        max-height: 3;
+        padding: 0 1;
+    }
     """
 
     BINDINGS = [
@@ -58,6 +72,7 @@ class RDTUI(App):
         Binding("ctrl+v", "quick_paste", "Wklej", priority=True),
         Binding("r", "refresh", "Odśwież", priority=True),
         Binding("f", "toggle_filter", "Szukaj", priority=True),
+        Binding("ctrl+p", "command_palette", "Paleta", priority=True),
         # Operacje na plikach
         Binding("space", "toggle_select", "Zaznacz", priority=True),
         Binding("d", "download", "Pobierz", priority=True),
@@ -83,6 +98,17 @@ class RDTUI(App):
 
     # UI state flags
     queue_active: reactive[bool] = reactive(False)
+    _modal_open: bool = False  # Prevent multiple modals
+
+    def watch_filter_text(self, old_value: str, new_value: str) -> None:
+        """Auto-refresh table when filter text changes."""
+        if hasattr(self, 'table') and self.table.is_mounted:
+            self._render_table()
+
+    def watch_active_category(self, old_value: str, new_value: str) -> None:
+        """Auto-refresh table when category changes."""
+        if hasattr(self, 'table') and self.table.is_mounted:
+            self._render_table()
 
     # aria2 RPC and queue
     aria2: Optional[Aria2RPC] = None
@@ -98,7 +124,8 @@ class RDTUI(App):
 
             # Filter bar (hidden until active)
             self.filter_bar = Horizontal(
-                Input(placeholder="Pisz, by filtrować…", id="filter")
+                Input(placeholder="Pisz, by filtrować…", id="filter"),
+                id="filter-bar"
             )
             self.filter_bar.display = False
             yield self.filter_bar
@@ -213,10 +240,37 @@ class RDTUI(App):
 
     async def action_help(self):
         """Show help modal."""
+        if self._modal_open:
+            return
+        self._modal_open = True
         self.mount(HelpModal())
+
+    async def action_command_palette(self):
+        """Show command palette for quick action search."""
+        if self._modal_open:
+            return
+        self._modal_open = True
+        actions = [
+            ("add_magnet", "a", "Dodaj plik"),
+            ("quick_paste", "Ctrl+V", "Wklej link"),
+            ("refresh", "r", "Odśwież listę"),
+            ("toggle_filter", "f", "Szukaj/Filtruj"),
+            ("toggle_select", "Space", "Zaznacz plik"),
+            ("download", "d", "Pobierz zaznaczone"),
+            ("delete", "x", "Usuń torrent"),
+            ("copy_link", "l", "Kopiuj link"),
+            ("toggle_queue", "k", "Kolejka pobrań"),
+            ("settings", "g", "Ustawienia"),
+            ("help", "?", "Pomoc"),
+            ("quit", "q", "Wyjście"),
+        ]
+        self.mount(CommandPaletteModal(actions))
 
     async def action_settings(self):
         """Show settings modal."""
+        if self._modal_open:
+            return
+        self._modal_open = True
         modal = SettingsModal(self.cfg)
         self.mount(modal)
 
@@ -257,7 +311,18 @@ class RDTUI(App):
             return
         try:
             ts = await self.rd.torrents()
-            self._all_rows = [TorrentRow.from_info(t) for t in ts]
+
+            # Deduplicate by ID - keep first occurrence
+            seen_ids = set()
+            unique_rows = []
+            for t in ts:
+                row = TorrentRow.from_info(t)
+                if row.id not in seen_ids:
+                    seen_ids.add(row.id)
+                    unique_rows.append(row)
+
+            self._all_rows = unique_rows
+
             # Keep selection only for existing IDs
             self.selected_ids = {
                 i for i in self.selected_ids if any(r.id == i for r in self._all_rows)
@@ -306,25 +371,69 @@ class RDTUI(App):
             pass
 
     def _render_table(self):
-        """Render the torrents table."""
+        """Render the torrents table while preserving cursor position."""
+        # Save current cursor position (row index and column index)
+        old_cursor_row = None
+        old_cursor_col = None
+        current_row_key = None
+
+        try:
+            if self.table.row_count > 0:
+                old_cursor_row = self.table.cursor_coordinate.row
+                old_cursor_col = self.table.cursor_coordinate.column
+                # Try to get the current row key to restore position by key
+                current_row_key = self._current_tid()
+        except Exception:
+            pass
+
         self.table.clear()
         rows = self._filtered_rows()
         # sort: newest first
         rows.sort(key=lambda r: r.added or datetime.fromtimestamp(0), reverse=True)
 
-        for row in rows:
-            self.table.add_row(
-                self._row_selected_icon(row.id),
-                row.pretty_filename(max_width=70, selected=False),  # Więcej miejsca bez ID
-                row.pretty_size(),
-                row.pretty_progress_bar(),
-                row.pretty_added(),
-                row.pretty_status(),
-                key=row.id,
-            )
+        # Track added keys to avoid duplicates
+        added_keys = set()
+        new_row_index = None  # Track where the current row key ended up
+
+        for idx, row in enumerate(rows):
+            # Skip duplicates
+            if row.id in added_keys:
+                continue
+
+            try:
+                self.table.add_row(
+                    self._row_selected_icon(row.id),
+                    row.pretty_filename(max_width=70, selected=False),  # Więcej miejsca bez ID
+                    row.pretty_size(),
+                    row.pretty_progress_bar(),
+                    row.pretty_added(),
+                    row.pretty_status(),
+                    key=row.id,
+                )
+                added_keys.add(row.id)
+
+                # Track if this is the row we were on
+                if current_row_key and row.id == current_row_key:
+                    new_row_index = idx
+
+            except Exception as e:
+                # Skip rows that cause errors (e.g., duplicate keys)
+                continue
+
+        # Restore cursor position
         if rows:
             try:
-                self.table.cursor_coordinate = (0, 0)
+                if new_row_index is not None and old_cursor_col is not None:
+                    # Restore to the same row (by key) and column
+                    self.table.move_cursor(row=new_row_index, column=old_cursor_col)
+                elif old_cursor_row is not None and old_cursor_col is not None:
+                    # Fallback: restore to same row index (if still valid)
+                    max_row = len(rows) - 1
+                    safe_row = min(old_cursor_row, max_row)
+                    self.table.move_cursor(row=safe_row, column=old_cursor_col)
+                else:
+                    # Default: move to top
+                    self.table.cursor_coordinate = (0, 0)
             except Exception:
                 pass
 
@@ -343,8 +452,8 @@ class RDTUI(App):
         from rdtui.utils.search import fuzzy_search
 
         q = self.filter_text.strip()
-        # Use fuzzy search with threshold of 40
-        results = fuzzy_search(q, rows, threshold=40)
+        # Use fuzzy search with threshold of 50 (better precision)
+        results = fuzzy_search(q, rows, threshold=50)
 
         # Extract just the rows (discard scores)
         return [row for score, row in results]
@@ -386,68 +495,47 @@ class RDTUI(App):
         return [tid] if tid else []
 
     def _current_tid(self) -> Optional[str]:
-        """Get the current torrent ID from the table cursor."""
+        """Get the current torrent ID from the table cursor.
+
+        Uses Textual 6.2+ API: coordinate_to_cell_key(cursor_coordinate)
+        """
         # If there are no rows, bail out
         try:
             if getattr(self.table, "row_count", 0) == 0:
                 return None
         except Exception:
             pass
-        # Try to get a direct cursor row key (Textual 5.x)
+
+        # Textual 6.2+ API: Use cursor_coordinate and coordinate_to_cell_key
         try:
-            row_key = getattr(self.table, "cursor_row_key")
-            if row_key is not None:
-                return str(row_key)
-        except Exception:
+            cursor_coord = self.table.cursor_coordinate
+            if cursor_coord is not None:
+                # coordinate_to_cell_key returns CellKey(row_key, column_key)
+                cell_key = self.table.coordinate_to_cell_key(cursor_coord)
+                if cell_key is not None:
+                    # CellKey is a NamedTuple with row_key and column_key
+                    row_key = cell_key.row_key
+                    # RowKey has a 'value' attribute (it's a StringKey)
+                    if hasattr(row_key, 'value'):
+                        return str(row_key.value) if row_key.value else str(row_key)
+                    else:
+                        return str(row_key)
+        except Exception as e:
+            # Log error for debugging
             pass
-        # Try to get a cursor cell where the first element may be the row key
+
+        # Fallback for older Textual versions (5.x)
+        # Try to get a direct cursor row key
         try:
-            cursor_cell = getattr(self.table, "cursor_cell")
-            if cursor_cell is not None:
-                row_key = cursor_cell[0]
-                if row_key is not None:
+            row_key = getattr(self.table, "cursor_row_key", None)
+            if row_key is not None:
+                if hasattr(row_key, 'value'):
+                    return str(row_key.value) if row_key.value else str(row_key)
+                else:
                     return str(row_key)
         except Exception:
             pass
-        # Fallback to cursor row index then resolve to a key
-        row_index = None
-        try:
-            row_index = getattr(self.table, "cursor_row")
-        except Exception:
-            row_index = None
-        if row_index is None:
-            # As an absolute fallback, assume first row
-            row_index = 0
-        # 1) Preferred: get_row_at(index).key
-        try:
-            row = self.table.get_row_at(row_index)
-            key = getattr(row, "key", None)
-            if key is not None:
-                return str(key)
-        except Exception:
-            pass
-        # 2) Newer API: get_row(index).key
-        try:
-            row = self.table.get_row(row_index)
-            key = getattr(row, "key", None)
-            if key is not None:
-                return str(key)
-        except Exception:
-            pass
-        # 3) Access internal row_keys list/tuple
-        try:
-            keys = getattr(self.table, "row_keys", None)
-            if keys is not None:
-                return str(keys[row_index])
-        except Exception:
-            pass
-        # 4) Last resort: read value from the ID column (index 1)
-        try:
-            cell = self.table.get_cell_at((row_index, 1))
-            if cell is not None:
-                return str(cell)
-        except Exception:
-            pass
+
         return None
 
     def _current_gid(self) -> Optional[str]:
@@ -579,9 +667,21 @@ class RDTUI(App):
             List of (filename, direct_url) tuples
         """
         assert self.rd is not None
-        info = await self.rd.torrent_info(tid)
+
+        # Debug: log the torrent ID we're trying to fetch
+        self.notify(f"🔍 Pobieranie info dla torrenta ID: {tid}", severity="information")
+
+        try:
+            info = await self.rd.torrent_info(tid)
+        except Exception as e:
+            self.notify(f"❌ Błąd torrent_info({tid}): {e}", severity="error")
+            return []
+
         links = info.get("links") or []
+        self.notify(f"📦 Znaleziono {len(links)} linków dla {tid}", severity="information")
+
         out: List[Tuple[str, str]] = []
+
         # 1) Prefer links list; unrestrict every link for a real direct URL and filename
         for url in links:
             try:
@@ -589,11 +689,17 @@ class RDTUI(App):
                 direct = unr.get("download") or unr.get("link") or url
                 fname = unr.get("filename") or url.split("/")[-1]
                 out.append((fname, direct))
-            except Exception:
-                # If unrestrict fails, still return the original
-                out.append((url.split("/")[-1], url))
+            except Exception as e:
+                # If unrestrict fails, log and try original
+                self.notify(f"⚠️ Błąd unrestrict: {e}", severity="warning")
+                # Check if link is already direct (starts with https://...)
+                if url.startswith("http"):
+                    fname = url.split("/")[-1].split("?")[0]  # Remove query params
+                    out.append((fname, url))
+
         if out:
             return out
+
         # 2) Fallback: unrestrict original host links (if present)
         origs = info.get("original", []) or []
         for item in origs:
@@ -609,8 +715,10 @@ class RDTUI(App):
                     or direct.split("/")[-1]
                 )
                 out.append((fname, direct))
-            except Exception:
+            except Exception as e:
+                self.notify(f"⚠️ Błąd unrestrict (fallback): {e}", severity="warning")
                 continue
+
         return out
 
     async def refresh_queue(self):
@@ -778,6 +886,13 @@ class RDTUI(App):
         ids = self._selected_or_current_ids()
         if not ids:
             return
+
+        # Check if we should use RPC (outside the loop)
+        use_rpc = (
+            self.cfg.get("aria2_rpc_enabled", False)
+            and self.aria2 is not None
+        )
+
         try:
             for tid in ids:
                 links = await self._collect_links(tid)
@@ -792,10 +907,7 @@ class RDTUI(App):
                     / tid
                 )
                 dl_dir.mkdir(parents=True, exist_ok=True)
-                use_rpc = (
-                    self.cfg.get("aria2_rpc_enabled", False)
-                    and self.aria2 is not None
-                )
+
                 if use_rpc:
                     # Add to aria2 queue via RPC
                     for fname, url in links:
@@ -831,6 +943,7 @@ class RDTUI(App):
                                 filename=fname,
                             )
                         )
+
             if not use_rpc:
                 self.notify("Pobieranie uruchomione w tle ✅")
         except Exception as e:
@@ -905,6 +1018,15 @@ class RDTUI(App):
         self.cfg.update(msg.cfg)
         save_config(self.cfg)
         await self.setup_client()
+        self._modal_open = False
+
+    def on_help_modal_closed(self, msg: HelpModal.Closed):
+        """Handle help modal close event."""
+        self._modal_open = False
+
+    def on_command_palette_modal_closed(self, msg: CommandPaletteModal.Closed):
+        """Handle command palette modal close event."""
+        self._modal_open = False
 
     async def on_quick_paste_modal_confirmed(self, msg: QuickPasteModal.Confirmed):
         """Handle quick paste modal confirmation."""

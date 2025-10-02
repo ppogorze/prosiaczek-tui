@@ -22,6 +22,10 @@ class HelpModal(Static):
     }
     """
 
+    class Closed(Message):
+        """Message sent when modal is closed."""
+        pass
+
     def compose(self) -> ComposeResult:
         """Compose the help modal UI."""
         yield Label("❓ Pomoc — skróty klawiszowe")
@@ -47,6 +51,7 @@ class HelpModal(Static):
 
     def on_button_pressed(self, _: Button.Pressed):
         """Handle button press to close modal."""
+        self.post_message(self.Closed())
         self.remove()
 
 
@@ -323,4 +328,119 @@ class QuickPasteModal(Static):
         if event.button.id == "confirm":
             self.post_message(self.Confirmed(self.clipboard_content, self.link_type))
         self.remove()
+
+
+class CommandPaletteModal(Static):
+    """Command palette for quick action search (like VS Code)."""
+
+    DEFAULT_CSS = """
+    CommandPaletteModal {
+        background: $panel;
+        border: thick $accent;
+        padding: 1 2;
+        width: 60;
+        height: auto;
+        max-height: 25;
+    }
+
+    CommandPaletteModal Input {
+        margin: 0 0 1 0;
+    }
+
+    CommandPaletteModal #actions-list {
+        height: auto;
+        max-height: 15;
+        border: solid $primary;
+        padding: 1;
+    }
+
+    CommandPaletteModal .action-item {
+        padding: 0 1;
+    }
+
+    CommandPaletteModal .action-item:hover {
+        background: $accent;
+    }
+    """
+
+    class ActionSelected(Message):
+        """Message sent when action is selected."""
+
+        def __init__(self, action: str):
+            super().__init__()
+            self.action = action
+
+    class Closed(Message):
+        """Message sent when modal is closed."""
+        pass
+
+    def __init__(self, actions: list[tuple[str, str, str]]):
+        """Initialize with available actions.
+
+        Args:
+            actions: List of (action_name, key, description) tuples
+        """
+        super().__init__()
+        self.all_actions = actions
+        self.filtered_actions = actions
+
+    def compose(self) -> ComposeResult:
+        """Compose the command palette UI."""
+        yield Label("🔍 Paleta komend (Ctrl+P)")
+        yield Input(placeholder="Wpisz nazwę akcji...", id="search")
+
+        # Actions list container - yield children directly
+        with Vertical(id="actions-list"):
+            for action_name, key, description in self.filtered_actions[:10]:  # Limit to 10
+                yield Label(f"[b]{description}[/b] ({key})", classes="action-item")
+
+        yield Horizontal(
+            Button("Zamknij [ESC]", id="close", variant="default"),
+        )
+
+    def on_input_changed(self, event: Input.Changed):
+        """Filter actions based on search input."""
+        if event.input.id != "search":
+            return
+
+        query = event.value.lower().strip()
+
+        if not query:
+            self.filtered_actions = self.all_actions
+        else:
+            # Simple fuzzy search
+            self.filtered_actions = [
+                (name, key, desc)
+                for name, key, desc in self.all_actions
+                if query in desc.lower() or query in key.lower() or query in name.lower()
+            ]
+
+        # Update actions list - use call_later to avoid render conflicts
+        self.call_later(self._update_actions_list)
+
+    def _update_actions_list(self):
+        """Update the actions list display."""
+        try:
+            actions_list = self.query_one("#actions-list", Vertical)
+            actions_list.remove_children()
+
+            for action_name, key, description in self.filtered_actions[:10]:
+                actions_list.mount(
+                    Label(f"[b]{description}[/b] ({key})", classes="action-item")
+                )
+        except Exception:
+            # Ignore if not mounted yet
+            pass
+
+    def on_button_pressed(self, event: Button.Pressed):
+        """Handle button press."""
+        self.post_message(self.Closed())
+        self.remove()
+
+    def on_key(self, event):
+        """Handle key press."""
+        if event.key == "escape":
+            self.post_message(self.Closed())
+            self.remove()
+            event.prevent_default()
 
